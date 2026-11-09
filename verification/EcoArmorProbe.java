@@ -25,6 +25,7 @@ import com.sun.management.ThreadMXBean;
 /** Isolated test only. Baseline loads only ArmorUtils and its nested classes from the supplied JAR. */
 public final class EcoArmorProbe extends JavaPlugin implements Listener {
     Class<?> old; Object oldInstance; Method oldScan, newScan;
+    Object oldDisplay; Method oldDisplayMethod;
     final AtomicInteger checks = new AtomicInteger();
     final List<String> events = new ArrayList<>();
     volatile Object sink; int failures; boolean recording;
@@ -36,7 +37,7 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
             ClassLoader parent = ArmorUtils.class.getClassLoader();
             var loader = new URLClassLoader(new URL[]{new java.io.File(System.getProperty("ecoarmor.baseline")).toURI().toURL()}, parent) {
                 protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-                    if (!name.startsWith("com.willfp.ecoarmor.sets.ArmorUtils")) return super.loadClass(name, resolve);
+                    if (!name.startsWith("com.willfp.ecoarmor.sets.ArmorUtils") && !name.equals("com.willfp.ecoarmor.display.ArmorDisplay")) return super.loadClass(name, resolve);
                     synchronized (getClassLoadingLock(name)) {
                         Class<?> c = findLoadedClass(name); if (c == null) c = findClass(name);
                         if (resolve) resolveClass(c); return c;
@@ -46,6 +47,9 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
             old = loader.loadClass(ArmorUtils.class.getName()); oldInstance = old.getField("INSTANCE").get(null);
             oldScan = old.getMethod("getActiveHolders", LivingEntity.class);
             newScan = ArmorUtils.class.getMethod("getActiveHolders", LivingEntity.class);
+            var displayClass=loader.loadClass("com.willfp.ecoarmor.display.ArmorDisplay");
+            oldDisplay=displayClass.getField("INSTANCE").get(null);
+            oldDisplayMethod=displayClass.getMethod("display",ItemStack.class,Player.class,Object[].class);
             // Keep automatic polling from contributing unrelated scans/events to the oracle comparison.
             com.willfp.libreforge.HolderProviderKt.unregisterHolderProvidersOwnedBy(parent);
             Bukkit.getPluginManager().registerEvents(this, this);
@@ -60,7 +64,9 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
         if (sender instanceof Player p) p.getScheduler().run(this, task -> {
             try {
                 check(Bukkit.isOwnedByCurrentRegion(p), "player owner");
-                if (args.length > 0 && args[0].equals("bench")) startBench(p);
+                if (args.length > 0 && args[0].equals("gates")) gates(p);
+                else if (args.length > 0 && args[0].equals("wire")) {p.setGameMode(GameMode.CREATIVE);displayRegression(p);}
+                else if (args.length > 0 && args[0].equals("bench")) startBench(p);
                 else { semantics(p); eventSequence(p, true); }
             } catch (Throwable e) { fail(e); }
         }, () -> fail(new IllegalStateException("player retired")));
@@ -123,6 +129,22 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
         public PersistentDataContainerView getPersistentDataContainer() { return delegate.getPersistentDataContainer(); }
         public int hashCode() { return delegate.hashCode(); }
     }
+    void gates(Player p) throws Exception {
+        var owner=(com.willfp.eco.core.EcoPlugin)Bukkit.getPluginManager().getPlugin("EcoArmor");
+        var field=com.willfp.eco.core.EcoPlugin.class.getDeclaredField("namespacedKeyFactory");field.setAccessible(true);
+        var original=owner.getNamespacedKeyFactory();var calls=new java.util.concurrent.atomic.AtomicInteger();
+        com.willfp.eco.core.factory.NamespacedKeyFactory counting=key->{calls.incrementAndGet();return original.create(key);};
+        int keyCalls,metaReads;var i=new CountedItem(item(Material.DIAMOND_HELMET,null,-1,true));
+        field.set(owner,counting);
+        try {for(int n=0;n<100;n++)ArmorUtils.getSetOnItem(i);keyCalls=calls.get();}
+        finally {field.set(owner,original);}
+        com.willfp.ecoarmor.display.ArmorDisplay.INSTANCE.display(i,p);metaReads=i.metaReads;
+        int bad=0;
+        if(keyCalls!=0){bad++;getLogger().warning("[EA] EXPECTED_RED marker reads construct keys="+keyCalls);}
+        if(metaReads!=0){bad++;getLogger().warning("[EA] EXPECTED_RED unmarked display reads Meta="+metaReads);}
+        getLogger().info("[EA] GATES_DONE failures="+bad+" keyCalls="+keyCalls+" metaReads="+metaReads);
+        if(System.getProperty("ecoarmor.variant").equals("new"))check(bad==0,"optimization gates");
+    }
     void compare(LivingEntity e, String name) throws Exception {
         check(signature(scan(true,e)).equals(signature(scan(false,e))),"holder result "+name);
     }
@@ -179,7 +201,73 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
             getLogger().info("[EA] META mode="+mode+" old="+oldReads+" new="+newReads);
         }
         p.getInventory().setArmorContents(new ItemStack[4]);
+        exhaustiveGrouping();
+        displayRegression(p);
         getLogger().info("[EA] SEMANTICS_DONE checks="+checks);
+    }
+    void exhaustiveGrouping() throws Exception {
+        var a=ArmorSets.getByID("probe_a");var b=ArmorSets.getByID("probe_b");
+        var field=ArmorSet.class.getDeclaredField("setRequirements");field.setAccessible(true);
+        int originalA=a.getSetRequirements(),originalB=b.getSetRequirements(),cases=0;
+        try {for(int ra=1;ra<=4;ra++)for(int rb=1;rb<=4;rb++){
+            field.setInt(a,ra);field.setInt(b,rb);
+            for(int mask=0;mask<81;mask++){
+                var items=armor("probe_a",0,true);int v=mask;
+                for(int slot=0;slot<4;slot++){int value=v%3;v/=3;if(value==0)items[slot]=null;else if(value==2)items[slot]=item(items[slot].getType(),"probe_b",1,true);}
+                compare(detached(items),"exhaustive "+ra+"/"+rb+"/"+mask);cases++;
+            }
+        }} finally {field.setInt(a,originalA);field.setInt(b,originalB);}
+        getLogger().info("[EA] GROUPING cases="+cases);
+    }
+    void display(boolean baseline,ItemStack item,Player p) throws Exception {
+        if(baseline)oldDisplayMethod.invoke(oldDisplay,item,p,new Object[0]);
+        else com.willfp.ecoarmor.display.ArmorDisplay.INSTANCE.display(item,p);
+    }
+    String displayResult(boolean baseline,ItemStack item,Player p) {
+        String error="ok";
+        try {display(baseline,item,p);}catch(Throwable e){while(e instanceof InvocationTargetException)e=e.getCause();error=e.getClass().getName();}
+        return error+":"+(item.getType().isAir()?"air":Base64.getEncoder().encodeToString(item.serializeAsBytes()));
+    }
+    void displayRegression(Player p) throws Exception {
+        var fixtures=new ArrayList<ItemStack>();
+        for(var material:List.of(Material.AIR,Material.STONE,Material.DIAMOND_SWORD,Material.PLAYER_HEAD,Material.CARVED_PUMPKIN,Material.LEATHER_HELMET,Material.ELYTRA))fixtures.add(item(material,null,-1,true));
+        var set=ArmorSets.getByID("probe_a");
+        for(var slot:ArmorSlot.values()){
+            if(set.getItemStack(slot)!=null){fixtures.add(set.getItemStack(slot).clone());fixtures.add(set.getAdvancedItemStack(slot).clone());}
+        }
+        fixtures.add(Tiers.INSTANCE.getDefaultTier().getCrystal().clone());fixtures.add(set.getAdvancementShardItem().clone());
+        for(int mask=0;mask<8;mask++){
+            var i=item(Material.LEATHER_HELMET,null,mask%2,true);var m=i.getItemMeta();
+            if((mask&1)!=0){m.getPersistentDataContainer().set(setKey,PersistentDataType.STRING,"probe_a");m.getPersistentDataContainer().set(new NamespacedKey("ecoarmor","tier"),PersistentDataType.STRING,"default");}
+            if((mask&2)!=0)m.getPersistentDataContainer().set(new NamespacedKey("ecoarmor","upgrade_crystal"),PersistentDataType.STRING,"default");
+            if((mask&4)!=0)m.getPersistentDataContainer().set(new NamespacedKey("ecoarmor","advancement-shard"),PersistentDataType.STRING,"probe_a");
+            ((org.bukkit.inventory.meta.LeatherArmorMeta)m).setColor(Color.BLUE);i.setItemMeta(m);fixtures.add(i);
+        }
+        for(String marker:List.of("set","upgrade_crystal","advancement-shard"))for(boolean wrongType:List.of(false,true)){
+            var i=item(Material.DIAMOND_HELMET,null,-1,true);var m=i.getItemMeta();var key=new NamespacedKey("ecoarmor",marker);
+            if(wrongType)m.getPersistentDataContainer().set(key,PersistentDataType.INTEGER,1);else m.getPersistentDataContainer().set(key,PersistentDataType.STRING,"unknown_id");i.setItemMeta(m);fixtures.add(i);
+        }
+        var config=((com.willfp.eco.core.EcoPlugin)Bukkit.getPluginManager().getPlugin("EcoArmor")).getConfigYml();
+        String[] keys={"update-item-names","update-leather-colors","advanced-lore-only"};boolean[] saved=new boolean[3];for(int n=0;n<3;n++)saved[n]=config.getBool(keys[n]);
+        int count=0;
+        try {for(int mode=0;mode<8;mode++){
+            for(int n=0;n<3;n++)config.set(keys[n],(mode&(1<<n))!=0);
+            for(var fixture:fixtures)for(Player viewer:Arrays.asList(null,p)){
+                check(displayResult(true,fixture.clone(),viewer).equals(displayResult(false,fixture.clone(),viewer)),"display bytes/errors "+fixture.getType()+" config="+mode);count++;
+            }
+        }}finally{for(int n=0;n<3;n++)config.set(keys[n],saved[n]);}
+        getLogger().info("[EA] DISPLAY comparisons="+count+" fixtures="+fixtures.size());
+        // Trigger the real Netty display path for the connected client as well.
+        int slot=0,negative=0;
+        for(var fixture:fixtures)if(!fixture.getType().isAir()){
+            // Malformed inputs with an expected original exception are covered directly,
+            // not sent as intentional packet-listener errors during this smoke check.
+            if(!displayResult(true,fixture.clone(),p).startsWith("ok:")){negative++;continue;}
+            check(slot<36,"wire fixtures fit native inventory");p.getInventory().setItem(slot++,fixture.clone());
+        }
+        p.updateInventory();
+        check(slot>9,"wire includes crystal/shard and combinations after armor fixtures");
+        getLogger().info("[EA] WIRE_DONE sent="+slot+" negativeDirectOnly="+negative);
     }
     void eventSequence(Player p, boolean baseline) throws Exception {
         // Temporarily replace the player's provider so only the selected implementation owns its state.
@@ -218,7 +306,7 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
     void nativeStep(Player p,int step,double base){
         if(step==4){
             double restored=p.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH).getValue();check(Math.abs(restored-base)<0.00001,"native health restored "+restored+" base "+base);
-            getLogger().info("[EA] REGRESSION_DONE checks="+checks+" failures="+failures);return;
+            reloadRegression(p);return;
         }
         ItemStack[] items=step==3?new ItemStack[4]:enderite(step==1);if(step==2)items[3]=null;
         p.getInventory().setArmorContents(items);com.willfp.libreforge.HolderProviderKt.forceRefreshHolders(com.willfp.libreforge.DispatcherKt.toDispatcher(p));
@@ -230,6 +318,19 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
             getLogger().info("[EA] NATIVE step="+step+" health="+p.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH).getValue()+" holders="+ids);
             nativeStep(p,step+1,base);
         }catch(Throwable e){fail(e);}},null,3);
+    }
+    void reloadRegression(Player p){
+        ItemStack retained=enderite(false)[0];ArmorSet oldDefinition=ArmorUtils.getSetOnItem(retained);
+        Bukkit.getGlobalRegionScheduler().run(this,t->{try{
+            check(Bukkit.dispatchCommand(Bukkit.getConsoleSender(),"ecoarmor reload"),"reload command accepted");
+            p.getScheduler().runDelayed(this,later->{try{
+                var current=ArmorSets.getByID("enderite");check(current!=null&&current!=oldDefinition,"reload replaced definitions");
+                check(ArmorUtils.getSetOnItem(retained)==current&&oldCall("getSetOnItem",ItemStack.class,retained)==current,"retained item sees reloaded definition");
+                compare(p,"after actual command reload");
+                if(System.getProperty("ecoarmor.variant").equals("new"))gates(p);
+                getLogger().info("[EA] RELOAD_PASS");getLogger().info("[EA] REGRESSION_DONE checks="+checks+" failures="+failures);
+            }catch(Throwable e){fail(e);}},null,30);
+        }catch(Throwable e){fail(e);}});
     }
     void startBench(Player p) {
         var fixtures = new ArrayList<Fixture>();
@@ -249,7 +350,7 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
         var bean=(ThreadMXBean)ManagementFactory.getThreadMXBean();check(bean.isThreadAllocatedMemorySupported(),"allocation measurement supported");
         bean.setThreadAllocatedMemoryEnabled(true);long tid=Thread.currentThread().threadId();check(!Thread.currentThread().isVirtual(),"platform benchmark thread");
         for(var f:fixtures){
-            for(int n=0;n<12000;n++)sink=scan(false,f.entity);
+            for(int n=0;n<50000;n++)sink=scan(false,f.entity);
             for(int round=0;round<16;round++){
                 int count=5000;
                 long before=bean.getThreadAllocatedBytes(tid),start=System.nanoTime();
@@ -257,6 +358,16 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
                 long ns=System.nanoTime()-start,bytes=bean.getThreadAllocatedBytes(tid)-before;
                 check(before>=0 && bytes>=0,"valid allocation counters");
                 getLogger().info("[EA] BENCH fixture="+f.name+" variant="+System.getProperty("ecoarmor.variant")+" round="+round+" count="+count+" ns="+ns+" bytes="+bytes);
+            }
+        }
+        for(var f:List.of(new Object[]{"ordinary-rich",item(Material.DIAMOND_HELMET,null,-1,true)},new Object[]{"marked-normal",enderite(false)[0]},new Object[]{"marked-advanced",enderite(true)[0]})){
+            String name=(String)f[0];ItemStack source=(ItemStack)f[1];
+            for(int n=0;n<10000;n++){var i=source.clone();display(false,i,null);sink=i;}
+            for(int round=0;round<12;round++){
+                int count=2000;long before=bean.getThreadAllocatedBytes(tid),start=System.nanoTime();
+                for(int n=0;n<count;n++){var i=source.clone();display(false,i,null);sink=i;}
+                long ns=System.nanoTime()-start,bytes=bean.getThreadAllocatedBytes(tid)-before;check(before>=0&&bytes>=0,"display allocation counters");
+                getLogger().info("[EA] DISPLAY_BENCH fixture="+name+" variant="+System.getProperty("ecoarmor.variant")+" round="+round+" count="+count+" ns="+ns+" bytes="+bytes);
             }
         }
         getLogger().info("[EA] BENCH_DONE checks="+checks+" failures="+failures);

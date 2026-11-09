@@ -34,6 +34,13 @@ internal lateinit var plugin: EcoArmorPlugin
     private set
 
 class EcoArmorPlugin : LibreforgePlugin() {
+    // Immutable markers belong to this plugin instance; item values are still read live.
+    internal val setKey = namespacedKeyFactory.create("set")
+    internal val advancedKey = namespacedKeyFactory.create("advanced")
+    internal val tierKey = namespacedKeyFactory.create("tier")
+    internal val upgradeCrystalKey = namespacedKeyFactory.create("upgrade_crystal")
+    internal val advancementShardKey = namespacedKeyFactory.create("advancement-shard")
+
     init {
         plugin = this
         Items.registerArgParser(TierArgParser())
