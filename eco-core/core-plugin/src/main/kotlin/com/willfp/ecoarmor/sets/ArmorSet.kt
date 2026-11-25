@@ -24,6 +24,7 @@ import com.willfp.libreforge.ViolationContext
 import com.willfp.libreforge.conditions.Conditions
 import com.willfp.libreforge.effects.Effects
 import org.bukkit.Bukkit
+import org.bukkit.NamespacedKey
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
 import java.util.Locale
@@ -49,6 +50,8 @@ class ArmorSet(
 
     /** Items in advanced set. */
     private val advancedItems = mutableMapOf<ArmorSlot, ItemStack>()
+    private val registeredItemKeys = mutableSetOf<NamespacedKey>()
+    internal val itemKeys: Set<NamespacedKey> get() = registeredItemKeys
 
     /** Holders in advanced set. */
     private val advancedSlotHolders = mutableMapOf<ArmorSlot, Holder>()
@@ -174,11 +177,12 @@ class ArmorSet(
                 }
             }
         }
-        CustomItem(
+        val setId = id
+        registerItem(CustomItem(
             plugin.namespacedKeyFactory.create("shard_" + id.lowercase(Locale.getDefault())),
-            { test: ItemStack? -> test != null && this == getShardSet(test) },
+            { test: ItemStack? -> test != null && getShardSet(test)?.id == setId },
             shard
-        ).register()
+        ))
         return shard
     }
 
@@ -214,47 +218,20 @@ class ArmorSet(
         } else {
             setTier(itemStack, defaultTier)
         }
-        if (advanced) {
-            CustomItem(
-                plugin.namespacedKeyFactory.create(
-                    "set_" + id.lowercase(Locale.getDefault()) + "_" + slot.name.lowercase(
-                        Locale.getDefault()
-                    ) + "_advanced"
-                ), { test ->
-                    if (getSlot(test) !== getSlot(itemStack)) {
-                        return@CustomItem false
-                    }
-                    if (!isAdvanced(test)) {
-                        return@CustomItem false
-                    }
-                    if (getSetOnItem(test) == null) {
-                        return@CustomItem false
-                    }
-                    this == getSetOnItem(test)
-                }, itemStack
-            ).register()
-        } else {
-            CustomItem(
-                plugin.namespacedKeyFactory.create(
-                    "set_" + id.lowercase(Locale.getDefault()) + "_" + slot.name.lowercase(
-                        Locale.getDefault()
-                    )
-                ),
-                { test ->
-                    if (getSlot(test) !== getSlot(itemStack)) {
-                        return@CustomItem false
-                    }
-                    if (isAdvanced(test)) {
-                        return@CustomItem false
-                    }
-                    if (getSetOnItem(test) == null) {
-                        return@CustomItem false
-                    }
-                    this == getSetOnItem(test)
-                }, itemStack
-            ).register()
-        }
+        val setId = id
+        val itemId = "set_" + id.lowercase(Locale.getDefault()) + "_" + slot.name.lowercase(Locale.getDefault())
+        val key = plugin.namespacedKeyFactory.create(if (advanced) "${itemId}_advanced" else itemId)
+        registerItem(CustomItem(key, { test ->
+            getSlot(test) === getSlot(itemStack) &&
+                isAdvanced(test) == advanced &&
+                getSetOnItem(test)?.id == setId
+        }, itemStack))
         return itemStack
+    }
+
+    private fun registerItem(item: CustomItem) {
+        plugin.registerConfiguredItem(item)
+        registeredItemKeys += item.key
     }
 
     @Suppress("DEPRECATION")

@@ -11,10 +11,9 @@ object EffectiveDurabilityListener : Listener {
     @EventHandler
     fun listener(event: PlayerItemDamageEvent) {
         val itemStack = event.item
-        val meta = itemStack.itemMeta ?: return
-        val container = meta.persistentDataContainer
+        val container = itemStack.persistentDataContainer
         val effectiveDurability =
-            container.get(plugin.namespacedKeyFactory.create("effective-durability"), PersistentDataType.INTEGER)
+            container.get(plugin.effectiveDurabilityKey, PersistentDataType.INTEGER)
                 ?: return
         val maxDurability = itemStack.type.maxDurability.toInt()
         if (maxDurability <= 0) return

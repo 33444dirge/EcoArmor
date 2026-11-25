@@ -7,7 +7,6 @@ import com.willfp.ecoarmor.sets.ArmorSlot.Companion.getSlot
 import com.willfp.ecoarmor.upgrades.Tier
 import com.willfp.ecoarmor.upgrades.Tiers
 import com.willfp.libreforge.Holder
-import com.willfp.libreforge.ItemProvidedHolder
 import com.willfp.libreforge.ProvidedHolder
 import com.willfp.libreforge.SchedulerHelper
 import com.willfp.libreforge.SimpleProvidedHolder
@@ -56,8 +55,14 @@ object ArmorUtils {
      */
     @JvmStatic
     fun getSetOnItem(itemStack: ItemStack): ArmorSet? {
-        val meta = itemStack.itemMeta ?: return null
-        return getSetOnItem(meta)
+        // Read only the marker; constructing ItemMeta copies unrelated item data.
+        val container = itemStack.persistentDataContainer
+        if (container.isEmpty) return null
+        val setName = container.get(
+            plugin.setKey,
+            PersistentDataType.STRING
+        ) ?: return null
+        return ArmorSets.getByID(setName)
     }
 
     /**
@@ -70,7 +75,7 @@ object ArmorUtils {
     fun getSetOnItem(meta: ItemMeta): ArmorSet? {
         val container = meta.persistentDataContainer
         val setName = container.get(
-            plugin.namespacedKeyFactory.create("set"),
+            plugin.setKey,
             PersistentDataType.STRING
         )
             ?: return null
@@ -105,13 +110,20 @@ object ArmorUtils {
     fun getActiveHolders(entity: LivingEntity): Collection<ProvidedHolder> {
         val holders = mutableListOf<ProvidedHolder>()
 
-        val equipment = entity.equipment?.armorContents?.toList() ?: emptyList()
+        val equipment = entity.equipment?.let { ArmorEquipment.read(entity, it) } ?: emptyList()
 
         // Pre-compute set lookups once for all items to avoid repeated PDC reads
-        val itemSets = equipment.map { item -> item?.let { getSetOnItem(it) } }
+        var itemSets: MutableList<ArmorSet?>? = null
+        for (i in equipment.indices) {
+            val item = equipment[i] ?: continue
+            val itemSet = getSetOnItem(item) ?: continue
+            if (itemSets == null) itemSets = MutableList(equipment.size) { null }
+            itemSets[i] = itemSet
+        }
 
-        val fullSet = getSetOn(equipment, itemSets)
-        val advanced = isWearingAdvanced(equipment, fullSet, itemSets)
+        val partialSetsWorn = countPartialSets(itemSets ?: emptyList())
+        val fullSet = if (partialSetsWorn.isEmpty()) null else findFullSet(partialSetsWorn)
+        val advanced = isWearingAdvanced(equipment, fullSet, itemSets ?: emptyList())
 
         val set = if (fullSet != null) {
             if (advanced) fullSet.advancedHolder else fullSet.regularHolder
@@ -123,7 +135,6 @@ object ArmorUtils {
             holders.add(SimpleProvidedHolder(set))
         }
 
-        val partialSetsWorn = countPartialSets(itemSets)
         for ((partialSet, count) in partialSetsWorn) {
             val suppressedByFull = fullSet != null && partialSet == fullSet && partialSet.fullSetDisablesPartialSet
             if (suppressedByFull) continue
@@ -146,16 +157,22 @@ object ArmorUtils {
             }
         }
 
-        holders.addAll(getSlotHolders(equipment, itemSets))
+        if (itemSets != null) {
+            for (i in equipment.indices) {
+                val itemStack = equipment[i] ?: continue
+                val itemSet = itemSets[i] ?: continue
+                val holder = itemSet.getSpecificHolder(itemStack) ?: continue
+                holders.add(holder)
+            }
+        }
 
         if (entity is Player) {
             val oldState = setCache[entity]
             val newSet = set?.armorSet
-            val newState = CachedSetState(newSet, advanced)
 
             if (oldState?.set != newSet || oldState?.advanced != advanced) {
                 // Update cache immediately so subsequent calls see correct state
-                setCache[entity] = newState
+                setCache[entity] = CachedSetState(newSet, advanced)
 
                 // Defer event firing to next tick to avoid re-entrancy from listeners
                 // Also ensure thread safety in Folia environment
@@ -192,25 +209,6 @@ object ArmorUtils {
 
 
     /**
-     * Get slot holders from pre-computed item sets.
-     */
-    private fun getSlotHolders(
-        equipment: List<ItemStack?>,
-        itemSets: List<ArmorSet?>
-    ): Collection<ItemProvidedHolder> {
-        val holders = mutableListOf<ItemProvidedHolder>()
-
-        for (i in equipment.indices) {
-            val itemStack = equipment[i] ?: continue
-            val set = itemSets[i] ?: continue
-            val holder = set.getSpecificHolder(itemStack) ?: continue
-            holders.add(holder)
-        }
-
-        return holders
-    }
-
-    /**
      * Get armor set that entity is wearing.
      *
      * @param entity The entity to check.
@@ -241,17 +239,13 @@ object ArmorUtils {
         return findFullSet(found)
     }
 
-    /**
-     * Get armor set from pre-computed per-item set lookups.
-     */
-    private fun getSetOn(items: List<ItemStack?>, itemSets: List<ArmorSet?>): ArmorSet? {
-        val found = itemSets.filterNotNull()
-        return findFullSet(found)
-    }
-
     private fun findFullSet(found: List<ArmorSet>): ArmorSet? {
         if (found.isEmpty()) return null
         val grouped = found.groupingBy { it }.eachCount()
+        return findFullSet(grouped)
+    }
+
+    private fun findFullSet(grouped: Map<ArmorSet, Int>): ArmorSet? {
         for ((set, count) in grouped) {
             if (count >= set.setRequirements) {
                 return set
@@ -282,9 +276,12 @@ object ArmorUtils {
      * Get partial sets from pre-computed per-item set lookups.
      */
     private fun countPartialSets(itemSets: List<ArmorSet?>): Map<ArmorSet, Int> {
-        val found = itemSets.filterNotNull()
-        if (found.isEmpty()) return emptyMap()
-        return found.groupingBy { it }.eachCount()
+        if (itemSets.isEmpty()) return emptyMap()
+        val counts = LinkedHashMap<ArmorSet, Int>()
+        for (set in itemSets) {
+            if (set != null) counts[set] = (counts[set] ?: 0) + 1
+        }
+        return counts
     }
 
     /**
@@ -295,8 +292,10 @@ object ArmorUtils {
      */
     @JvmStatic
     fun getCrystalTier(itemStack: ItemStack): Tier? {
-        val meta = itemStack.itemMeta ?: return null
-        return getCrystalTier(meta)
+        val container = itemStack.persistentDataContainer
+        val key = plugin.upgradeCrystalKey
+        if (!container.has(key, PersistentDataType.STRING)) return null
+        return Tiers.getByID(container.get(key, PersistentDataType.STRING))
     }
 
     /**
@@ -308,16 +307,12 @@ object ArmorUtils {
     @JvmStatic
     fun getCrystalTier(meta: ItemMeta): Tier? {
         return if (meta.persistentDataContainer.has(
-                plugin.namespacedKeyFactory.create(
-                    "upgrade_crystal"
-                ), PersistentDataType.STRING
+                plugin.upgradeCrystalKey, PersistentDataType.STRING
             )
         ) {
             Tiers.getByID(
                 meta.persistentDataContainer.get(
-                    plugin.namespacedKeyFactory.create(
-                        "upgrade_crystal"
-                    ), PersistentDataType.STRING
+                    plugin.upgradeCrystalKey, PersistentDataType.STRING
                 )
             )
         } else null
@@ -353,16 +348,12 @@ object ArmorUtils {
             return null
         }
         return if (meta.persistentDataContainer.has(
-                plugin.namespacedKeyFactory.create(
-                    "tier"
-                ), PersistentDataType.STRING
+                plugin.tierKey, PersistentDataType.STRING
             )
         ) {
             Tiers.getByID(
                 meta.persistentDataContainer.get(
-                    plugin.namespacedKeyFactory.create(
-                        "tier"
-                    ), PersistentDataType.STRING
+                    plugin.tierKey, PersistentDataType.STRING
                 )
             )
         } else null
@@ -473,14 +464,14 @@ object ArmorUtils {
         tier: Tier
     ) {
         if (!meta.persistentDataContainer.has(
-                plugin.namespacedKeyFactory.create("set"),
+                plugin.setKey,
                 PersistentDataType.STRING
             )
         ) {
             return
         }
         meta.persistentDataContainer.set(
-            plugin.namespacedKeyFactory.create("tier"),
+            plugin.tierKey,
             PersistentDataType.STRING,
             tier.id
         )
@@ -541,8 +532,10 @@ object ArmorUtils {
      */
     @JvmStatic
     fun isAdvanced(itemStack: ItemStack): Boolean {
-        val meta = itemStack.itemMeta ?: return false
-        return isAdvanced(meta)
+        val container = itemStack.persistentDataContainer
+        val key = plugin.advancedKey
+        return container.has(key, PersistentDataType.INTEGER) &&
+            container.get(key, PersistentDataType.INTEGER) == 1
     }
 
     /**
@@ -554,12 +547,12 @@ object ArmorUtils {
     @JvmStatic
     fun isAdvanced(meta: ItemMeta): Boolean {
         return if (meta.persistentDataContainer.has(
-                plugin.namespacedKeyFactory.create("advanced"),
+                plugin.advancedKey,
                 PersistentDataType.INTEGER
             )
         ) {
             meta.persistentDataContainer.get(
-                plugin.namespacedKeyFactory.create("advanced"),
+                plugin.advancedKey,
                 PersistentDataType.INTEGER
             ) == 1
         } else false
@@ -578,7 +571,7 @@ object ArmorUtils {
     ) {
         val meta = itemStack.itemMeta ?: return
         meta.persistentDataContainer.set(
-            plugin.namespacedKeyFactory.create("advanced"),
+            plugin.advancedKey,
             PersistentDataType.INTEGER,
             if (advanced) 1 else 0
         )
@@ -606,9 +599,7 @@ object ArmorUtils {
     @JvmStatic
     fun getShardSet(meta: ItemMeta): ArmorSet? {
         val shardSet = meta.persistentDataContainer.get(
-            plugin.namespacedKeyFactory.create(
-                "advancement-shard"
-            ), PersistentDataType.STRING
+            plugin.advancementShardKey, PersistentDataType.STRING
         )
             ?: return null
         return ArmorSets.getByID(shardSet)

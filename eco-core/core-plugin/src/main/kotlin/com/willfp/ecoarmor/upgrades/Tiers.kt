@@ -6,6 +6,7 @@ import com.willfp.eco.core.registry.Registry
 import com.willfp.libreforge.loader.LibreforgePlugin
 import com.willfp.libreforge.loader.configs.ConfigCategory
 import com.willfp.libreforge.loader.configs.LegacyLocation
+import org.bukkit.NamespacedKey
 
 object Tiers : ConfigCategory("tier", "tiers") {
     /**
@@ -14,6 +15,8 @@ object Tiers : ConfigCategory("tier", "tiers") {
     private val registry = Registry<Tier>()
 
     private var cachedValues: List<Tier> = emptyList()
+    internal var itemKeys: Set<NamespacedKey> = emptySet()
+        private set
 
     override val supportsSharing = false
 
@@ -65,5 +68,6 @@ object Tiers : ConfigCategory("tier", "tiers") {
     override fun afterReload(plugin: LibreforgePlugin) {
         cachedValues = ImmutableList.copyOf(registry.values())
         defaultTier = getByID("default")!!
+        itemKeys = cachedValues.mapTo(mutableSetOf()) { it.crystalKey }
     }
 }

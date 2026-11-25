@@ -6,7 +6,7 @@ import com.willfp.eco.core.display.DisplayPriority
 import com.willfp.eco.core.fast.FastItemStack
 import com.willfp.eco.core.placeholder.context.placeholderContext
 import com.willfp.eco.util.formatEco
-import com.willfp.ecoarmor.plugin
+import com.willfp.ecoarmor.plugin as armorPlugin
 import com.willfp.ecoarmor.sets.ArmorSlot
 import com.willfp.ecoarmor.sets.ArmorUtils
 import com.willfp.libreforge.SimpleProvidedHolder
@@ -15,12 +15,19 @@ import org.bukkit.inventory.ItemStack
 import org.bukkit.inventory.meta.LeatherArmorMeta
 import java.util.Locale
 
-object ArmorDisplay : DisplayModule(plugin, DisplayPriority.LOWEST) {
+object ArmorDisplay : DisplayModule(armorPlugin, DisplayPriority.LOWEST) {
     override fun display(
         itemStack: ItemStack,
         player: Player?,
         vararg args: Any
     ) {
+        val markers = itemStack.persistentDataContainer
+        // Check presence only so malformed marker types still follow the original handling.
+        if (!markers.has(armorPlugin.setKey)
+            && !markers.has(armorPlugin.upgradeCrystalKey)
+            && !markers.has(armorPlugin.advancementShardKey)
+        ) return
+
         val meta = itemStack.itemMeta ?: return
 
         val fis = FastItemStack.wrap(itemStack)
