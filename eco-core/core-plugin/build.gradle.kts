@@ -7,6 +7,7 @@ dependencies {
     providers.gradleProperty("libreforge-api-jar").orNull?.let {
         compileOnly(files(it))
     }
+    compileOnly(files(providers.gradleProperty("mizuki-core-jar")))
 }
 
 tasks {

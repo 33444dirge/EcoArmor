@@ -11,6 +11,7 @@ import com.willfp.ecoarmor.plugin
 import com.willfp.ecoarmor.sets.ArmorSlot
 import com.willfp.ecoarmor.sets.ArmorUtils.getCrystalTier
 import com.willfp.libreforge.notNullMutableMapOf
+import org.bukkit.NamespacedKey
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
 import java.util.Locale
@@ -40,6 +41,7 @@ class Tier(
      * The ItemStack of the crystal.
      */
     val crystal: ItemStack
+    internal val crystalKey: NamespacedKey
 
     /**
      * Item properties.
@@ -94,11 +96,13 @@ class Tier(
             )
         }
 
-        CustomItem(
-            plugin.namespacedKeyFactory.create("upgrade_crystal_" + id.lowercase(Locale.getDefault())),
-            { test: ItemStack? -> test != null && this == getCrystalTier(test) },
+        val tierId = id
+        crystalKey = plugin.namespacedKeyFactory.create("upgrade_crystal_" + id.lowercase(Locale.getDefault()))
+        plugin.registerConfiguredItem(CustomItem(
+            crystalKey,
+            { test: ItemStack? -> test != null && getCrystalTier(test)?.id == tierId },
             out
-        ).register()
+        ))
 
         if (this.craftable) {
             val recipeStrings = config.getStrings("crystal.recipe")

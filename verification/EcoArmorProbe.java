@@ -67,6 +67,7 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
                 if (args.length > 0 && args[0].equals("gates")) gates(p);
                 else if (args.length > 0 && args[0].equals("wire")) {p.setGameMode(GameMode.CREATIVE);displayRegression(p);}
                 else if (args.length > 0 && args[0].equals("bench")) startBench(p);
+                else if (args.length > 0 && args[0].equals("focused")) focusedBench();
                 else { semantics(p); eventSequence(p, true); }
             } catch (Throwable e) { fail(e); }
         }, () -> fail(new IllegalStateException("player retired")));
@@ -201,6 +202,9 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
             getLogger().info("[EA] META mode="+mode+" old="+oldReads+" new="+newReads);
         }
         p.getInventory().setArmorContents(new ItemStack[4]);
+        for (var fixture : emptyFixtures()) {
+            compare(fixture.entity(), fixture.name());
+        }
         exhaustiveGrouping();
         displayRegression(p);
         getLogger().info("[EA] SEMANTICS_DONE checks="+checks);
@@ -292,6 +296,15 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
         p.getScheduler().runDelayed(this,t->{try{eventStep(p,baseline,step+1,trace);}catch(Throwable e){fail(e);}},null,3);
     }
     record Fixture(String name, LivingEntity entity) {}
+    List<Fixture> emptyFixtures() {
+        var air = new ItemStack[4];
+        Arrays.fill(air, CraftItemStack.asCraftCopy(new ItemStack(Material.AIR)));
+        return List.of(
+            new Fixture("air-slots", detached(air)),
+            new Fixture("empty-pdc", detached(armor(null,-1,false))),
+            new Fixture("unrelated-pdc", detached(armor(null,-1,true)))
+        );
+    }
     ItemStack[] enderite(boolean advanced){
         var set=ArmorSets.getByID("enderite");if(set==null)throw new AssertionError("supplied enderite set");
         var slots=new ArmorSlot[]{ArmorSlot.BOOTS,ArmorSlot.LEGGINGS,ArmorSlot.CHESTPLATE,ArmorSlot.HELMET};var result=new ItemStack[4];
@@ -335,6 +348,7 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
     void startBench(Player p) {
         var fixtures = new ArrayList<Fixture>();
         fixtures.add(new Fixture("empty",detached(new ItemStack[4])));
+        fixtures.addAll(emptyFixtures());
         fixtures.add(new Fixture("ordinary-plain",detached(armor(null,0,false))));
         fixtures.add(new Fixture("ordinary-rich",detached(armor(null,0,true))));
         fixtures.add(new Fixture("full-normal-rich",detached(armor("probe_a",0,true))));
@@ -371,6 +385,33 @@ public final class EcoArmorProbe extends JavaPlugin implements Listener {
             }
         }
         getLogger().info("[EA] BENCH_DONE checks="+checks+" failures="+failures);
+    }
+    void focusedBench() {
+        var fixtures = new ArrayList<Fixture>();
+        fixtures.add(new Fixture("empty", detached(new ItemStack[4])));
+        fixtures.addAll(emptyFixtures());
+        fixtures.add(new Fixture("production-enderite-normal", detached(enderite(false))));
+        fixtures.add(new Fixture("production-enderite-advanced", detached(enderite(true))));
+        new Thread(() -> { try {
+            var bean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+            check(bean.isThreadAllocatedMemorySupported(), "focused allocation supported");
+            bean.setThreadAllocatedMemoryEnabled(true);
+            long tid = Thread.currentThread().threadId();
+            check(!Thread.currentThread().isVirtual(), "focused platform thread");
+            // Warm every branch before any measurement; call the installed plugin directly.
+            for (int pass=0; pass<50; pass++) for (var f: fixtures)
+                for (int n=0; n<10000; n++) sink=ArmorUtils.INSTANCE.getActiveHolders(f.entity());
+            for (int round=0; round<24; round++) for (int offset=0; offset<fixtures.size(); offset++) {
+                var f=fixtures.get((offset+round)%fixtures.size());
+                int count=20000;
+                long before=bean.getThreadAllocatedBytes(tid), start=System.nanoTime();
+                for (int n=0; n<count; n++) sink=ArmorUtils.INSTANCE.getActiveHolders(f.entity());
+                long ns=System.nanoTime()-start, bytes=bean.getThreadAllocatedBytes(tid)-before;
+                check(before>=0 && bytes>=0, "focused valid counters");
+                getLogger().info("[EA] FOCUSED fixture="+f.name()+" variant="+System.getProperty("ecoarmor.variant")+" round="+round+" count="+count+" ns="+ns+" bytes="+bytes);
+            }
+            getLogger().info("[EA] FOCUSED_DONE checks="+checks+" failures="+failures);
+        } catch (Throwable e) { fail(e); } }, "ecoarmor-detached-focused").start();
     }
     public void onDisable(){getLogger().info("[EA] DISABLED checks="+checks+" failures="+failures);}
 }

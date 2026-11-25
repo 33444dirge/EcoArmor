@@ -1,5 +1,17 @@
 # EcoArmor PDC performance verification
 
+Version 2026.27-3 additionally skips typed marker lookup on an empty PDC, builds
+the per-slot set list only after finding a registered set, counts directly into an
+ordered map, appends slot holders directly, and allocates player cache state only
+when it changes. Empty equipment still reaches the existing unequip/event logic.
+The November 16 probe adds explicit AIR, empty-PDC and unrelated-PDC fixtures.
+Its main benchmark now has 12 scan fixtures. `/ecoarmorprobe focused` supplements
+the original reflective benchmark with direct installed-plugin calls: all six
+fixtures receive 500,000 warmup calls before measurement; 24 rounds rotate fixture
+order with 20,000 calls each. Keep both datasets when assessing timing differences.
+The 2026.27-3 audit uses the original 2026.27-2 JAR as oracle and baseline on59603df.
+See the delivered November 16 report for measurements and remaining limitations.
+
 Version 2026.27-1 introduced read-only item PDC marker reads. Version 2026.27-2
 reuses five immutable marker keys owned by the plugin instance, shares the existing
 ordered equipment count between full and partial sets, and skips display Meta reads
@@ -71,3 +83,36 @@ The original `analyze.py` and RESULTS-20261023.md refer to the historical -1 ben
 These measurements are per-call allocation and wall-clock microbenchmarks, not
 whole-server CPU, resident heap, production MSPT, or a production saving guarantee.
 The original production JAR is the oracle; recompiling the baseline is not a substitute.
+
+### 2026.27-6 build
+
+Use the included compile-only SchedulerHelper API and the expanded mizuki 26.2 server
+JAR from commit f44c27e. The latter is the file under `versions/26.2`, with SHA-256
+`de89a7a8bd0611b2e3fd1c14f0905748c8765a1e1e1b2623d7ab43a5e9493981`.
+
+```powershell
+$scheduler = (Resolve-Path -LiteralPath 'verification/build-api/scheduler-api.jar').Path
+$core = (Resolve-Path -LiteralPath '<isolated-server>/versions/26.2/shiroha-26.2.jar').Path
+.\gradlew.bat clean check shadowJar "-Plibreforge-api-jar=$scheduler" "-Pmizuki-core-jar=$core"
+```
+
+Use the root `build/libs/EcoArmor-2026.27-6-all.jar`. The Java target is 21, the
+Paper API is 1.21.8, and the isolated mizuki runtime uses Java 25. The core is a
+compile-only dependency. At runtime the empty-armor optimization checks the
+server build and equipment implementation before using native slots. The Bukkit
+snapshot remains the fallback.
+
+For reload retention, compare the published -4 JAR and the candidate on the same
+isolated core and fixtures. Add and remove four distinct set/tier IDs via
+`/ecoarmor reload`. At each removal, compare eco's registered keys and weak
+references after GC. Prime the lookup cache with regular armor, advanced armor,
+shards and crystals before removing each ID. Check the live heap and exercise
+restoring a retired ID, removing a slot from a still-active set, and retaining
+a replacement registration owned by another caller.
+
+For the alias case, register an alias for the original advanced item and replace
+its original key with a different object. Retire the definition and compare the
+exact objects under both keys. EcoArmor verifies ownership and removes the
+original entry in one operation against eco's concurrent item registry. The
+compatible registry layout is verified on eco 2026.28. If unavailable, EcoArmor
+logs a warning and leaves the external registry entries in place.

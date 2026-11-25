@@ -24,10 +24,8 @@ object AdvancementShardListener : Listener {
         val current = event.currentItem ?: return
         val cursor = event.cursor ?: return
 
-        val cursorMeta = cursor.itemMeta ?: return
-
-        val shardSet = cursorMeta.persistentDataContainer.get(
-            plugin.namespacedKeyFactory.create("advancement-shard"),
+        val shardSet = cursor.persistentDataContainer.get(
+            plugin.advancementShardKey,
             PersistentDataType.STRING
         ) ?: return
 

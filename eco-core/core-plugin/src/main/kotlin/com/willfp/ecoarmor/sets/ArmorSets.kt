@@ -6,6 +6,7 @@ import com.willfp.eco.core.registry.Registry
 import com.willfp.libreforge.loader.LibreforgePlugin
 import com.willfp.libreforge.loader.configs.ConfigCategory
 import com.willfp.libreforge.loader.configs.LegacyLocation
+import org.bukkit.NamespacedKey
 
 object ArmorSets : ConfigCategory("set", "sets") {
     /**
@@ -14,6 +15,8 @@ object ArmorSets : ConfigCategory("set", "sets") {
     private val registry = Registry<ArmorSet>()
 
     private var cachedValues: List<ArmorSet> = emptyList()
+    internal var itemKeys: Set<NamespacedKey> = emptySet()
+        private set
 
     override val legacyLocation = LegacyLocation(
         "ecoarmor.yml",
@@ -52,5 +55,6 @@ object ArmorSets : ConfigCategory("set", "sets") {
 
     override fun afterReload(plugin: LibreforgePlugin) {
         cachedValues = ImmutableList.copyOf(registry.values())
+        itemKeys = cachedValues.flatMapTo(mutableSetOf()) { it.itemKeys }
     }
 }

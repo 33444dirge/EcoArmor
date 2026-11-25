@@ -7,7 +7,6 @@ import com.willfp.ecoarmor.sets.ArmorSlot.Companion.getSlot
 import com.willfp.ecoarmor.upgrades.Tier
 import com.willfp.ecoarmor.upgrades.Tiers
 import com.willfp.libreforge.Holder
-import com.willfp.libreforge.ItemProvidedHolder
 import com.willfp.libreforge.ProvidedHolder
 import com.willfp.libreforge.SchedulerHelper
 import com.willfp.libreforge.SimpleProvidedHolder
@@ -57,7 +56,9 @@ object ArmorUtils {
     @JvmStatic
     fun getSetOnItem(itemStack: ItemStack): ArmorSet? {
         // Read only the marker; constructing ItemMeta copies unrelated item data.
-        val setName = itemStack.persistentDataContainer.get(
+        val container = itemStack.persistentDataContainer
+        if (container.isEmpty) return null
+        val setName = container.get(
             plugin.setKey,
             PersistentDataType.STRING
         ) ?: return null
@@ -109,15 +110,20 @@ object ArmorUtils {
     fun getActiveHolders(entity: LivingEntity): Collection<ProvidedHolder> {
         val holders = mutableListOf<ProvidedHolder>()
 
-        // armorContents returns a fresh array; these helpers only read its list view.
-        val equipment = entity.equipment?.armorContents?.asList() ?: emptyList()
+        val equipment = entity.equipment?.let { ArmorEquipment.read(entity, it) } ?: emptyList()
 
         // Pre-compute set lookups once for all items to avoid repeated PDC reads
-        val itemSets = equipment.map { item -> item?.let { getSetOnItem(it) } }
+        var itemSets: MutableList<ArmorSet?>? = null
+        for (i in equipment.indices) {
+            val item = equipment[i] ?: continue
+            val itemSet = getSetOnItem(item) ?: continue
+            if (itemSets == null) itemSets = MutableList(equipment.size) { null }
+            itemSets[i] = itemSet
+        }
 
-        val partialSetsWorn = countPartialSets(itemSets)
+        val partialSetsWorn = countPartialSets(itemSets ?: emptyList())
         val fullSet = if (partialSetsWorn.isEmpty()) null else findFullSet(partialSetsWorn)
-        val advanced = isWearingAdvanced(equipment, fullSet, itemSets)
+        val advanced = isWearingAdvanced(equipment, fullSet, itemSets ?: emptyList())
 
         val set = if (fullSet != null) {
             if (advanced) fullSet.advancedHolder else fullSet.regularHolder
@@ -151,18 +157,22 @@ object ArmorUtils {
             }
         }
 
-        if (partialSetsWorn.isNotEmpty()) {
-            holders.addAll(getSlotHolders(equipment, itemSets))
+        if (itemSets != null) {
+            for (i in equipment.indices) {
+                val itemStack = equipment[i] ?: continue
+                val itemSet = itemSets[i] ?: continue
+                val holder = itemSet.getSpecificHolder(itemStack) ?: continue
+                holders.add(holder)
+            }
         }
 
         if (entity is Player) {
             val oldState = setCache[entity]
             val newSet = set?.armorSet
-            val newState = CachedSetState(newSet, advanced)
 
             if (oldState?.set != newSet || oldState?.advanced != advanced) {
                 // Update cache immediately so subsequent calls see correct state
-                setCache[entity] = newState
+                setCache[entity] = CachedSetState(newSet, advanced)
 
                 // Defer event firing to next tick to avoid re-entrancy from listeners
                 // Also ensure thread safety in Folia environment
@@ -197,25 +207,6 @@ object ArmorUtils {
         return holders
     }
 
-
-    /**
-     * Get slot holders from pre-computed item sets.
-     */
-    private fun getSlotHolders(
-        equipment: List<ItemStack?>,
-        itemSets: List<ArmorSet?>
-    ): Collection<ItemProvidedHolder> {
-        val holders = mutableListOf<ItemProvidedHolder>()
-
-        for (i in equipment.indices) {
-            val itemStack = equipment[i] ?: continue
-            val set = itemSets[i] ?: continue
-            val holder = set.getSpecificHolder(itemStack) ?: continue
-            holders.add(holder)
-        }
-
-        return holders
-    }
 
     /**
      * Get armor set that entity is wearing.
@@ -285,9 +276,12 @@ object ArmorUtils {
      * Get partial sets from pre-computed per-item set lookups.
      */
     private fun countPartialSets(itemSets: List<ArmorSet?>): Map<ArmorSet, Int> {
-        val found = itemSets.filterNotNull()
-        if (found.isEmpty()) return emptyMap()
-        return found.groupingBy { it }.eachCount()
+        if (itemSets.isEmpty()) return emptyMap()
+        val counts = LinkedHashMap<ArmorSet, Int>()
+        for (set in itemSets) {
+            if (set != null) counts[set] = (counts[set] ?: 0) + 1
+        }
+        return counts
     }
 
     /**
@@ -298,8 +292,10 @@ object ArmorUtils {
      */
     @JvmStatic
     fun getCrystalTier(itemStack: ItemStack): Tier? {
-        val meta = itemStack.itemMeta ?: return null
-        return getCrystalTier(meta)
+        val container = itemStack.persistentDataContainer
+        val key = plugin.upgradeCrystalKey
+        if (!container.has(key, PersistentDataType.STRING)) return null
+        return Tiers.getByID(container.get(key, PersistentDataType.STRING))
     }
 
     /**
